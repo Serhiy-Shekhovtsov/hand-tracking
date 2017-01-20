@@ -15,16 +15,15 @@ def run(source=0, dispLoc=False):
         print "Video device or file couldn't be opened"
         exit()
 
-    # TODO: detect hand we are going to track using first model
-    
     print "Press key `p` to pause the video to start tracking"
     while True:
         # Retrieve an image and Display it.
         retval, img = cam.read()
+        img = cv2.flip(img, 1)
         if not retval:
             print "Cannot capture frame device"
             exit()
-        if (cv2.waitKey(10) == ord('p')):
+        if cv2.waitKey(10) == ord('p'):
             break
         cv2.namedWindow("Image", cv2.WINDOW_NORMAL)
         cv2.imshow("Image", img)
@@ -32,6 +31,8 @@ def run(source=0, dispLoc=False):
 
     # Co-ordinates of objects to be tracked
     # will be stored in a list named `points`
+
+    # TODO: detect hand we are going to track using first model
     points = get_points.run(img)
 
     if not points:
@@ -50,6 +51,7 @@ def run(source=0, dispLoc=False):
     while True:
         # Read frame from device or file
         retval, img = cam.read()
+        img = cv2.flip(img, 1)
         if not retval:
             print "Cannot capture frame device | CODE TERMINATING :("
             exit()
