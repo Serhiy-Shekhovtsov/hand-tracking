@@ -1,95 +1,140 @@
-# example taken from https://github.com/bikz05/object-tracker/blob/master/object-tracker-single.py
-# Import the required modules
-import dlib
+import numpy as np
 import cv2
-import argparse as ap
 import get_points
 
+cap = cv2.VideoCapture(0)
 
-def run(source=0, dispLoc=False):
-    # Create the VideoCapture object
-    cam = cv2.VideoCapture(source)
-
-    # If Camera Device is not opened, exit the program
-    if not cam.isOpened():
-        print "Video device or file couldn't be opened"
+# ###1 ALL THIS WILL BE REPLACED WITH CAFFE DETECTION
+while (True):
+    # Capture frame-by-frame
+    ret, frame = cap.read()
+    img = cv2.flip(frame, 1)
+    if not ret:
+        print "Cannot capture frame device"
         exit()
-
-    print "Press key `p` to pause the video to start tracking"
-    while True:
-        # Retrieve an image and Display it.
-        retval, img = cam.read()
-        img = cv2.flip(img, 1)
-        if not retval:
-            print "Cannot capture frame device"
-            exit()
-        if cv2.waitKey(10) == ord('p'):
-            break
-        cv2.namedWindow("Image", cv2.WINDOW_NORMAL)
-        cv2.imshow("Image", img)
-    cv2.destroyWindow("Image")
-
-    # Co-ordinates of objects to be tracked
-    # will be stored in a list named `points`
-
-    # TODO: detect hand we are going to track using first model
-    points = get_points.run(img)
-
-    if not points:
-        print "ERROR: No object to be tracked."
-        exit()
-
+    if cv2.waitKey(10) == ord('p'):
+        break
     cv2.namedWindow("Image", cv2.WINDOW_NORMAL)
     cv2.imshow("Image", img)
 
-    # Initial co-ordinates of the object to be tracked
-    # Create the tracker object
-    tracker = dlib.correlation_tracker()
-    # Provide the tracker the initial position of the object
-    tracker.start_track(img, dlib.rectangle(*points[0]))
+cv2.destroyWindow("Image")
+#    tlx  tly  brx  bry
+# [(359, 233, 630, 408)]
+points = get_points.run(img)
 
-    while True:
-        # Read frame from device or file
-        retval, img = cam.read()
-        img = cv2.flip(img, 1)
-        if not retval:
-            print "Cannot capture frame device | CODE TERMINATING :("
-            exit()
-        # Update the tracker
-        tracker.update(img)
-        # Get the position of the object, draw a
-        # bounding box around it and display it.
-        rect = tracker.get_position()
-        pt1 = (int(rect.left()), int(rect.top()))
-        pt2 = (int(rect.right()), int(rect.bottom()))
-        cv2.rectangle(img, pt1, pt2, (255, 255, 255), 3)
-        print "Object tracked at [{}, {}] \r".format(pt1, pt2),
-        if dispLoc:
-            loc = (int(rect.left()), int(rect.top() - 20))
-            txt = "Object tracked at [{}, {}]".format(pt1, pt2)
-            cv2.putText(img, txt, loc, cv2.FONT_HERSHEY_SIMPLEX, .5, (255, 255, 255), 1)
-        cv2.namedWindow("Image", cv2.WINDOW_NORMAL)
-        cv2.imshow("Image", img)
-        # Continue until the user presses ESC key
-        if cv2.waitKey(1) == 27:
+if not points:
+    print "ERROR: No object to be tracked."
+    exit()
+
+# ### END 1
+
+bbplus = 100
+minx = points[0][0]
+miny = points[0][1]
+maxx = points[0][2]
+maxy = points[0][3]
+
+r, h, c, w = minx, miny, maxx-minx, maxy-miny  # simply hardcoded the values
+
+# (xmin, ymin, xmax - xmin, ymax - ymin)
+track_window = (c, r, w, h)
+
+# set up the ROI for tracking
+roi = img[r:r + h, c:c + w]
+hsv_roi = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+mask = cv2.inRange(hsv_roi, np.array((0., 60., 32.)), np.array((180., 255., 255.)))
+roi_hist = cv2.calcHist([hsv_roi], [0], mask, [180], [0, 180])
+cv2.normalize(roi_hist, roi_hist, 0, 255, cv2.NORM_MINMAX)
+
+# Setup the termination criteria, either iterations or move by at least some pt
+term_crit = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 1)
+
+while(True):
+    # Capture frame-by-frame
+    ret, frame = cap.read()
+    img = cv2.flip(frame, 1)
+
+    if ret:
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        dst = cv2.calcBackProject([hsv], [0], roi_hist, [0, 180], 1)
+
+        # apply meanshift to get the new location
+        # ret, track_window = cv2.meanShift(dst, track_window, term_crit)
+        ret, track_window = cv2.CamShift(dst, track_window, term_crit)
+
+        (c, r, w, h) = track_window
+        img_hand = img[r-bbplus:r + h + bbplus, c-bbplus:c + w + bbplus]
+
+        #!!! find contours
+        gray = cv2.cvtColor(img_hand, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (7, 7), 2)
+        ret2, thresh1 = cv2.threshold(blur, 70, 200, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        contours, hierarchy = cv2.findContours(thresh1, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        drawing = np.zeros(img_hand.shape, np.uint8)
+        if thresh1 is not None:
+            cv2.imshow('hand', thresh1)
+
+        # > extract the largest contour
+        max_area = 0
+        for i in range(len(contours)):
+            cnt = contours[i]
+            area = cv2.contourArea(cnt)
+            if area > max_area:
+                max_area = area
+                ci = i
+        cnt = contours[ci]
+        hull = cv2.convexHull(cnt)
+        moments = cv2.moments(cnt)
+        if moments['m00'] != 0:
+            cx = int(moments['m10'] / moments['m00'])  # cx = M10/M00
+            cy = int(moments['m01'] / moments['m00'])  # cy = M01/M00
+
+        centr = (cx, cy)
+        cv2.circle(img_hand, centr, 5, [0, 0, 255], 2)
+        cv2.drawContours(drawing, [cnt], 0, (0, 255, 0), 2)
+        cv2.drawContours(drawing, [hull], 0, (0, 0, 255), 2)
+
+        cnt = cv2.approxPolyDP(cnt, 0.01 * cv2.arcLength(cnt, True), True)
+        hull = cv2.convexHull(cnt, returnPoints=False)
+
+        if cnt.any() and hull.any():
+            defects = cv2.convexityDefects(cnt, hull)
+            mind = 0
+            maxd = 0
+            if defects is not None:
+                for i in range(defects.shape[0]):
+                    s, e, f, d = defects[i, 0]
+                    start = tuple(cnt[s][0])
+                    end = tuple(cnt[e][0])
+                    far = tuple(cnt[f][0])
+                    dist = cv2.pointPolygonTest(cnt, centr, True)
+                    cv2.line(img_hand, start, end, [0, 255, 0], 2)
+
+                    cv2.circle(img_hand, far, 5, [0, 0, 255], -1)
+            i = 0
+        #!!! find contours end
+        # cv2.imshow('hand', img_hand)
+
+        # Draw it on image - meanShift
+        # x, y, w, h = track_window
+        # cv2.rectangle(img, (x, y), (x + w, y + h), 255, 2)
+        # Draw it on image - CamShift
+        img[r-bbplus:r + h + bbplus, c-bbplus:c + w + bbplus] = img_hand
+        pts = cv2.cv.BoxPoints(ret)
+        pts = np.int0(pts)
+        cv2.polylines(img, [pts], isClosed=True, color=255, thickness=2)
+        cv2.imshow('img2', img)
+
+        k = cv2.waitKey(30) & 0xff
+        if k == 27:
             break
+        else:
+            cv2.imwrite(chr(k) + ".jpg", img)
 
-    # Relase the VideoCapture object
-    cam.release()
-
-
-if __name__ == "__main__":
-    # Parse command line arguments
-    parser = ap.ArgumentParser()
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('-d', "--deviceID", help="Device ID")
-    group.add_argument('-v', "--videoFile", help="Path to Video File")
-    parser.add_argument('-l', "--dispLoc", dest="dispLoc", action="store_true")
-    args = vars(parser.parse_args())
-
-    # Get the source of video
-    if args["videoFile"]:
-        source = args["videoFile"]
     else:
-        source = int(args["deviceID"])
-    run(source, args["dispLoc"])
+        break
+
+# When everything done, release the capture
+cap.release()
+cv2.destroyAllWindows()
